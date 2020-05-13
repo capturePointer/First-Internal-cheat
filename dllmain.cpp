@@ -80,6 +80,8 @@ bool GetD3D9Device(HWND hwnd, void** pTable, size_t size)
 		return true;
 
 	}
+
+	return false;
 }
 
 void CleanUpDeviceD3D()

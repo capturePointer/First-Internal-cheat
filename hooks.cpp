@@ -1,5 +1,7 @@
 #include <iostream>
 #include <tchar.h>
+#include <vector>
+
 #include "External/Detours.h"
 #include "hooks.h"
 #include "imgui\imgui.h"
@@ -10,6 +12,21 @@
 #pragma comment(lib, "External/detours.lib")
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+struct CharacterModel
+{
+public:
+	UINT NumVertices;
+	UINT PrimCount;
+	UINT Stride;
+
+	CharacterModel(UINT n, UINT p, UINT s)
+	{
+		NumVertices = n;
+		PrimCount = p;
+		Stride = s;
+	}
+};
 
 // Original hooks
 static WNDPROC wndProc_orig = 0;
@@ -25,7 +42,6 @@ static HWND window = 0;
 static bool show_menu = false;
 static bool chams = false;
 
-
 IDirect3DPixelShader9* shaderback = 0;
 IDirect3DPixelShader9* shaderfront = 0;
 UINT stride;
@@ -33,7 +49,7 @@ D3DVERTEXELEMENT9 decl[MAXD3DDECLLENGTH];
 UINT numElements, mStartRegister, mVectorCount, vSize, pSize;
 IDirect3DVertexShader9* vShader;
 IDirect3DPixelShader9* pShader;
-
+std::vector<CharacterModel*> characterModels;
 
 
 HRESULT GenerateShader(IDirect3DDevice9* pDevice, IDirect3DPixelShader9** pShader, float r, float g, float b)
@@ -41,7 +57,7 @@ HRESULT GenerateShader(IDirect3DDevice9* pDevice, IDirect3DPixelShader9** pShade
 	TCHAR szShader[256];
 	ID3DXBuffer* pShaderBuf = NULL;
 
-	_stprintf_s(szShader, _T("ps.1.1\ndef c0, %f, %f, %f\nmov r0,c0"), r, g, b);
+	_stprintf_s(szShader, _T("ps_3_0\ndef c0, %f, %f, %f, %f\nmov oC0,c0"), r, g, b, 1.0f);
 
 	if (FAILED(D3DXAssembleShader(szShader, sizeof(szShader), NULL, NULL, 0, &pShaderBuf, NULL)))
 		return E_FAIL;
@@ -52,7 +68,11 @@ HRESULT GenerateShader(IDirect3DDevice9* pDevice, IDirect3DPixelShader9** pShade
 	return D3D_OK;
 }
 
-
+void AddCharacterModel(UINT n, UINT p, UINT s)
+{
+	CharacterModel* t = new CharacterModel(n, p, s);
+	characterModels.push_back(t);
+}
 
 LRESULT WINAPI WndProc_hook(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -109,7 +129,7 @@ HRESULT APIENTRY EndScene_hook(IDirect3DDevice9* pDevice)
 		ImGui::Begin("Menu", &show_menu);
 		ImGui::Checkbox("Chams", &chams);
 
-		if (ImGui::Button("Rage quit"))
+		/*if (ImGui::Button("Rage quit"))
 		{
 			isToggled = true;
 			chams = true;
@@ -118,7 +138,7 @@ HRESULT APIENTRY EndScene_hook(IDirect3DDevice9* pDevice)
 		if (isToggled)
 		{
 			ImGui::Text("Button press detected");
-		}
+		}*/
 
 		ImGui::End();
 		ImGui::Render();
@@ -132,7 +152,7 @@ HRESULT APIENTRY SetStreamSource_hook(IDirect3DDevice9* pDevice, UINT StreamNumb
 {
 	if (StreamNumber == 0)
 	{
-		//stride = sstride;
+		stride = sstride;
 	}
 
 	return SetStreamSource_orig(pDevice, StreamNumber, pStreamData, OffsetInBytes, sstride);
@@ -142,7 +162,7 @@ HRESULT APIENTRY SetVertexDeclaration_hook(IDirect3DDevice9* pDevice, IDirect3DV
 {
 	if (pDecl != NULL)
 	{
-		//pDecl->GetDeclaration(decl, &numElements);
+		pDecl->GetDeclaration(decl, &numElements);
 	}
 
 	return SetVertexDeclaration_orig(pDevice, pDecl);
@@ -152,8 +172,8 @@ HRESULT APIENTRY SetVertexShaderConstantF_hook(IDirect3DDevice9* pDevice, UINT S
 {
 	if (pConstantData != NULL)
 	{
-		//mStartRegister = StartRegister;
-		//mVectorCount = Vector4fCount;
+		mStartRegister = StartRegister;
+		mVectorCount = Vector4fCount;
 	}
 
 	return SetVertexShaderConstantF_orig(pDevice, StartRegister, pConstantData, Vector4fCount);
@@ -163,8 +183,8 @@ HRESULT APIENTRY SetVertexShader_hook(IDirect3DDevice9* pDevice, IDirect3DVertex
 {
 	if (veShader != NULL)
 	{
-		//vShader = veShader;
-		//vShader->GetFunction(NULL, &vSize);
+		vShader = veShader;
+		vShader->GetFunction(NULL, &vSize);
 	}
 
 	return SetVertexShader_orig(pDevice, veShader);
@@ -174,30 +194,67 @@ HRESULT APIENTRY SetPixelShader_hook(IDirect3DDevice9* pDevice, IDirect3DPixelSh
 {
 	if (piShader != NULL)
 	{
-		//pShader = piShader;
-		//pShader->GetDevice(NULL, &pSize);
+		pShader = piShader;
+		pShader->GetFunction(NULL, &pSize);
 	}
 
 	return SetPixelShader_orig(pDevice, piShader);
 }
 
-HRESULT APIENTRY DrawIndexedPrimitive_hook(IDirect3DDevice9* pDevice, D3DPRIMITIVETYPE arg0, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount)
+HRESULT APIENTRY DrawIndexedPrimitive_hook(IDirect3DDevice9* pDevice, D3DPRIMITIVETYPE PrimType, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount)
 {
-	if (((T_Models) || (CT_Models)))
+	LPDIRECT3DVERTEXBUFFER9 streamData;
+	UINT offset = 0;
+	UINT stride = 0;
+	BOOL match = FALSE;
+
+	if (pDevice->GetStreamSource(0, &streamData, &offset, &stride) == D3D_OK)
+		streamData->Release();
+
+	for (size_t i = 0; i < characterModels.size(); ++i)
+	{
+		auto model = characterModels[i];
+
+		if ((model->Stride == stride) && (model->NumVertices == NumVertices) && (model->PrimCount == primCount))
+		{
+			match = TRUE;
+			break;
+		}
+	}
+
+	if (match)
 	{
 		pDevice->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
 		pDevice->SetPixelShader(shaderback);
+	}
 
-		DrawIndexedPrimitive_orig(pDevice, arg0, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
+	HRESULT result = DrawIndexedPrimitive_orig(pDevice, PrimType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
 
+	if (match)
+	{
 		pDevice->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
 		pDevice->SetPixelShader(shaderfront);
+	}
+
+	return result;
+
+/*
+	if (((T_Models) || (CT_Models)))
+	{
+		pDevice->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+		//pDevice->SetPixelShader(shaderback);
+
+		DrawIndexedPrimitive_orig(pDevice, PrimType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
+
+		pDevice->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+		//pDevice->SetPixelShader(shaderfront);
 
 		return S_OK;
 	}
 
-	return DrawIndexedPrimitive_orig(pDevice, arg0, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
-}\
+	return DrawIndexedPrimitive_orig(pDevice, PrimType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
+*/
+}
 
 void InstallHooks(HWND hWindow, void** pd3d9Device)
 {
@@ -211,4 +268,8 @@ void InstallHooks(HWND hWindow, void** pd3d9Device)
 	SetVertexShaderConstantF_orig = (SetVertexShaderConstantF)Detours::X86::DetourFunction((uintptr_t)pd3d9Device[94], (uintptr_t)SetVertexShaderConstantF_hook);
 	SetStreamSource_orig = (SetStreamSource)Detours::X86::DetourFunction((uintptr_t)pd3d9Device[100], (uintptr_t)SetStreamSource_hook);
 	SetPixelShader_orig = (SetPixelShader)Detours::X86::DetourFunction((uintptr_t)pd3d9Device[107], (uintptr_t)SetPixelShader_hook);
+
+	AddCharacterModel(5299, 7167, 32);
+	AddCharacterModel(1967, 2720, 32);
+	AddCharacterModel(2482, 3414, 32);
 }
